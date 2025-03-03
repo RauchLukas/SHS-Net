@@ -7,7 +7,21 @@ import numpy as np
 
 from net.network import Network
 from misc import get_logger, seed_all
-from dataset import PointCloudDataset, PatchDataset, SequentialPointcloudPatchSampler, load_data
+# from dataset import PointCloudDataset, PatchDataset, SequentialPointcloudPatchSampler, load_data
+from dataset import SequentialPointcloudPatchSampler
+from mydataset import PointCloudDataset, load_data, PatchDataset
+
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
 
 def parse_arguments():
@@ -19,7 +33,7 @@ def parse_arguments():
     parser.add_argument('--ckpt_dirs', type=str, default='', help='multiple files separated by comma')
     parser.add_argument('--ckpt_iters', type=str, default='', help='multiple files separated by comma')
     parser.add_argument('--seed', type=int, default=2022)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=16)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--tag', type=str, default='')
     parser.add_argument('--testset_list', type=str, default='')
@@ -53,9 +67,9 @@ def get_data_loaders(args):
             test_set,
             sampler=SequentialPointcloudPatchSampler(test_set),
             batch_size=args.batch_size,
-            num_workers=args.num_workers,
+            num_workers=0,
         )
-    return test_dset, test_dataloader
+    return test_dset, test_set, test_dataloader
 
 
 # Arguments
@@ -70,7 +84,7 @@ assert args.gpu >= 0, "ERROR GPU ID!"
 _device = torch.device('cuda:%d' % args.gpu)
 
 ### Datasets and loaders
-test_dset, test_dataloader = get_data_loaders(args)
+test_dset, test_set, test_dataloader = get_data_loaders(args)
 
 
 def normal_RMSE(normal_gts, normal_preds, eval_file='log.txt'):
@@ -227,7 +241,33 @@ def test(ckpt_dir, ckpt_iter):
     normal_prop = torch.zeros([shape_patch_count, 3])
 
     total_time = 0
+    
+    lr_start = time.time()
+    ds_start = time.time()
+    batch_debug_counter = 0
+    timings_accumulator = []
+
+
     for batchind, batch in enumerate(test_dataloader, 0):
+        ds_duration = time.time() - ds_start
+        ds_msg = (f"{bcolors.FAIL}{str(ds_duration)}{bcolors.ENDC}" if ds_duration > 2 else str(ds_duration))
+        # print("[DEBUG] Step DataLoader: ", ds_msg)
+
+        batch_debug_counter += 1
+        # Extend local accumulator with dataset timings
+        timings_accumulator.extend(test_set.debug_times)
+        # Clear the dataset-side list so we don’t double-collect
+        test_set.debug_times = []
+
+        arr = np.array(timings_accumulator)
+        means = arr.sum(axis=0)
+        print(f"[DEBUG STATS after {batch_debug_counter} batches] "
+              f"shape_index: {means[0]:.4f}, make_patch: {means[1]:.4f}, "
+              f"build_dict: {means[2]:.4f}, subsample: {means[3]:.4f}, PCA: {means[4]:.4f}")
+        # Reset
+        timings_accumulator = []
+
+
         pcl_pat = batch['pcl_pat'].to(_device)
         data_trans = batch['pca_trans'].to(_device)
         pcl_sample = batch['pcl_sample'].to(_device) if 'pcl_sample' in batch else None
@@ -239,7 +279,7 @@ def test(ckpt_dir, ckpt_iter):
         elapsed_time = 1000 * (end_time - start_time)
         total_time += elapsed_time
 
-        if batchind % 5 == 0:
+        if batchind % 1 == 0:
             batchSize = pcl_pat.size()[0]
             logger.info('[%d/%d] %s: time per patch: %.3f ms' % (
                         batchind, num_batch-1, test_dset.shape_names[shape_ind], elapsed_time / batchSize))
@@ -277,10 +317,12 @@ def test(ckpt_dir, ckpt_iter):
                 # normals_to_write[np.logical_and(normals_to_write < eps, normals_to_write > -eps)] = 0.0
 
                 save_path = os.path.join(file_save_dir, test_dset.shape_names[shape_ind] + '_normal.npy') # for faster reading speed
-                np.save(save_path, normals_to_write)
+                # create folder if not exists
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                # np.save(save_path, normals_to_write)
                 if args.save_pn:
                     save_path = os.path.join(file_save_dir, test_dset.shape_names[shape_ind] + '.normals')
-                    np.savetxt(save_path, normals_to_write, fmt='%.6f')
+                    # np.savetxt(save_path, normals_to_write, fmt='%.6f')
                 logger.info('Save normal: {}'.format(save_path))
                 logger.info('Total Time: %.2f sec, Shape Num: %d / %d \n' % (total_time/1000, shape_ind+1, shape_num))
 
@@ -290,6 +332,15 @@ def test(ckpt_dir, ckpt_iter):
                 if shape_ind < shape_num:
                     shape_patch_count = test_dset.shape_patch_count[shape_ind]
                     normal_prop = torch.zeros([shape_patch_count, 3])
+        
+        # TODO Remove this
+        duration = time.time() - lr_start
+        msg = (f"{bcolors.WARNING}{str(duration)}{bcolors.ENDC}" if duration > 2 else str(duration))
+        # print("[DEBUG] Step Test Process: ", msg)
+        lr_start = time.time()
+        ds_start = time.time()
+
+        
 
     logger.info('Total Time: %.2f sec, Shape Num: %d' % (total_time/1000, shape_num))
     return output_dir, file_save_dir
@@ -320,7 +371,7 @@ def eval(normal_gt_path, normal_pred_path, output_dir):
         for shape in shape_names:
             print(shape)
             normal_pred = np.load(os.path.join(normal_pred_path, shape + '_normal.npy'))                  # (n, 3)
-            normal_gt = load_data(filedir=normal_gt_path, filename=shape + '.normals', dtype=np.float32)  # (N, 3)
+            normal_gt = load_data(filedir=normal_gt_path, filename=shape + '/normal', dtype=np.float32)  # (N, 3)
             if os.path.exists(os.path.join(normal_gt_path, shape + '.pidx')):
                 points_idx = load_data(filedir=normal_gt_path, filename=shape + '.pidx', dtype=np.int32)      # (n,)
                 eval_sparse = True

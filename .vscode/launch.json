@@ -1,0 +1,36 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+
+        
+        {
+            "name": "Python Debugger: with args",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "test.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--gpu", "0",
+                "--dataset_root", "./dataset/",
+                "--data_set", "structured3d",
+                "--log_root", "./log/",
+                "--ckpt_dirs", "001",
+                "--ckpt_iters", "800",
+                "--patch_size", "700",
+                "--batch_size", "1200",
+                "--sample_size", "1200",
+                "--encode_knn", "16",
+                "--save_pn", "True",
+                "--sparse_patches", "False",
+                "--tag", " ",
+                "--num_workers", "16",
+                "--testset_list", "test_samples",
+                "--eval_list", "test_samples",
+            ]
+        }
+    ]
+}
